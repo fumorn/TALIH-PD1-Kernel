@@ -336,7 +336,14 @@ EXPORT_SYMBOL(blk_stop_queue);
 void blk_sync_queue(struct request_queue *q)
 {
 	del_timer_sync(&q->timeout);
-	cancel_work_sync(&q->timeout_work);
+
+	/*
+	 * Bio-based queues initialize timeout_work with a NULL function and
+	 * never arm it.  flush_work() warns on such work, so only synchronize
+	 * queues that actually own a request path.
+	 */
+	if (q->request_fn || q->mq_ops)
+		cancel_work_sync(&q->timeout_work);
 
 	if (q->mq_ops) {
 		struct blk_mq_hw_ctx *hctx;

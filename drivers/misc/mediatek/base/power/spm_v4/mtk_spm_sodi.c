@@ -300,7 +300,12 @@ unsigned int spm_sodi_output_log(struct wake_status *wakesta,
 	if (mtk_idle_latency_profile_is_on())
 		return wr;
 
-	if (!(flags & SODI_FLAG_REDUCE_LOG) || (flags & SODI_FLAG_RESIDENCY)) {
+	/*
+	 * Normal SODI wakes can occur every few milliseconds.  Keep the verbose
+	 * wake dump for residency profiling only; the reduced path still logs
+	 * assert, abnormal residency, EMI-state and long-interval events.
+	 */
+	if (flags & SODI_FLAG_RESIDENCY) {
 
 		so_warn(flags,
 			"self_refresh = 0x%x, sw_flag = 0x%x, 0x%x, oper_cond = 0x%x\n",

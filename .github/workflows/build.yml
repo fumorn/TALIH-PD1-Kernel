@@ -1,4 +1,4 @@
-name: build-kernel
+name: Build TALIH-PD1 Kernel
 
 on:
   workflow_dispatch:
@@ -9,9 +9,14 @@ concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   build:
+    name: Build arm64 Image and DTB
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,18 +30,21 @@ jobs:
 
       - name: Fetch AOSP clang r383902b
         if: steps.cache-clang.outputs.cache-hit != 'true'
+        shell: bash
         run: |
-          mkdir -p /opt/clang
-          curl -sL -o /tmp/clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r383902b.tar.gz"
-          tar -xzf /tmp/clang.tar.gz -C /opt/clang
-          ls /opt/clang/bin/clang
+          set -euxo pipefail
+          sudo mkdir -p /opt/clang
+          curl --fail --retry 5 --retry-all-errors -L \
+            -o /tmp/clang.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r383902b.tar.gz"
+          sudo tar -xzf /tmp/clang.tar.gz -C /opt/clang
+          test -x /opt/clang/bin/clang
 
-      - name: Install cross toolchain deps
+      - name: Install cross toolchain dependencies
+        shell: bash
         run: |
+          set -euxo pipefail
           export DEBIAN_FRONTEND=noninteractive
-          # azure.archive.ubuntu.com (via mirror+file selector) throttles the
-          # aarch64 cross-toolchain .debs. Replace the mirror selector with
-          # direct canonical HTTPS sources and relax acquire timeouts.
           sudo rm -f /etc/apt/apt-mirrors.txt /etc/apt/sources.list.d/ubuntu.sources
           sudo tee /etc/apt/sources.list.d/ubuntu.sources >/dev/null <<'EOF'
           Types: deb
@@ -57,30 +65,57 @@ jobs:
           Acquire::https::Timeout "120";
           EOF
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libssl-dev flex bison bc ccache
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu libssl-dev flex bison bc ccache
 
-      - name: Cache ccache (incremental build)
+      - name: Cache ccache
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ccache-${{ github.ref }}-${{ github.sha }}
+          key: ccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
           restore-keys: |
-            ccache-${{ github.ref }}-
-            ccache-
+            ccache-${{ runner.os }}-${{ github.ref_name }}-
+            ccache-${{ runner.os }}-
 
-      - name: Build Image + dtbs
+      - name: Build Image and DTB
+        shell: bash
         run: |
+          set -euxo pipefail
           export PATH="/opt/clang/bin:$PATH"
-          export CCACHE_DIR=$HOME/.ccache
+          export CCACHE_DIR="$HOME/.ccache"
           export CCACHE_COMPILERCHECK=content
-          make ARCH=arm64 CC="ccache clang" CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- KBUILD_BUILD_VERSION=${{ github.run_number }} -j$(nproc) -k Image dtbs
+          ccache --zero-stats
+          make ARCH=arm64 CC="ccache clang" \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            KBUILD_BUILD_VERSION="${{ github.run_number }}" \
+            -j"$(nproc)" -k Image dtbs
+          ccache --show-stats
+          test -s arch/arm64/boot/Image
+          test -s arch/arm64/boot/dts/mediatek/mt6771.dtb
 
-      - name: Upload artifacts
+      - name: Package build metadata
+        shell: bash
+        run: |
+          set -euxo pipefail
+          {
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Commit: $GITHUB_SHA"
+            echo "Run: $GITHUB_RUN_ID"
+            echo "Kernel release: $(make -s ARCH=arm64 kernelrelease)"
+            echo "Image SHA256: $(sha256sum arch/arm64/boot/Image | cut -d' ' -f1)"
+            echo "DTB SHA256: $(sha256sum arch/arm64/boot/dts/mediatek/mt6771.dtb | cut -d' ' -f1)"
+          } | tee build-metadata.txt
+
+      - name: Upload kernel artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Image-TALIH-PD1
+          name: Image-TALIH-PD1-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 30
           path: |
             arch/arm64/boot/Image
             arch/arm64/boot/dts/mediatek/mt6771.dtb
             vmlinux
             System.map
+            build-metadata.txt
