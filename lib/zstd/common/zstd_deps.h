@@ -15,6 +15,14 @@
  * to compile zstd without libc support.
  */
 
+/*
+ * Kernel < v5.10 lacks the fallthrough pseudo-keyword used throughout
+ * the upstream zstd sources. Provide it for clang/GCC8+.
+ */
+#ifndef fallthrough
+#define fallthrough __attribute__((__fallthrough__))
+#endif
+
 /* Need:
  * NULL
  * INT_MAX
@@ -28,6 +36,12 @@
 
 #include <linux/limits.h>
 #include <linux/stddef.h>
+/*
+ * Upstream (>=5.x) pulls size_t/ssize_t/SIZE_MAX in via linux/limits.h,
+ * which includes linux/types.h there; the 4.14 limits.h is a bare uapi
+ * wrapper, so pull types.h in explicitly here.
+ */
+#include <linux/types.h>
 
 #define ZSTD_memcpy(d,s,n) __builtin_memcpy((d),(s),(n))
 #define ZSTD_memmove(d,s,n) __builtin_memmove((d),(s),(n))
