@@ -137,7 +137,9 @@ static void __zstd_exit(void *ctx)
 static void zstd_free_ctx(struct crypto_scomp *tfm, void *ctx)
 {
 	__zstd_exit(ctx);
-	kfree_sensitive(ctx);
+	/* 4.14 has no kfree_sensitive(): wipe then free, same semantics */
+	memzero_explicit(ctx, sizeof(struct zstd_ctx));
+	kfree(ctx);
 }
 
 static void zstd_exit(struct crypto_tfm *tfm)
