@@ -199,6 +199,7 @@ int cgroup_show_path(struct seq_file *sf, struct kernfs_node *kf_node,
 		     struct kernfs_root *kf_root);
 
 int cgroup_task_count(const struct cgroup *cgrp);
+int __cgroup_task_count(const struct cgroup *cgrp);
 
 /*
  * namespace.c

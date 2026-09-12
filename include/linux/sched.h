@@ -869,6 +869,9 @@ struct task_struct {
 	/* JOBCTL_*, siglock protected: */
 	unsigned long			jobctl;
 
+	/* task is frozen/stopped (used by the cgroup freezer) */
+	unsigned			frozen:1;
+
 	/* Used for emulating ABI behavior of previous Linux versions: */
 	unsigned int			personality;
 
