@@ -613,6 +613,53 @@ static int read_from_bdev_async(struct zram *zram, struct bio_vec *bvec,
 	return 1;
 }
 
+/* tb8788p1: incompressible page direct write to backing device
+ * (upstream v4.19 zram writeback enhancement) */
+static bool zram_wb_enabled(struct zram *zram)
+{
+	return zram->backing_dev != NULL;
+}
+
+static int write_to_bdev(struct zram *zram, struct bio_vec *bvec,
+				u32 index, struct bio *parent,
+				unsigned long *pentry)
+{
+	struct bio *bio;
+	unsigned long entry;
+
+	bio = bio_alloc(GFP_ATOMIC, 1);
+	if (!bio)
+		return -ENOMEM;
+
+	entry = alloc_block_bdev(zram);
+	if (!entry) {
+		bio_put(bio);
+		return -ENOSPC;
+	}
+
+	bio->bi_iter.bi_sector = entry * (PAGE_SIZE >> 9);
+	bio_set_dev(bio, zram->bdev);
+	if (!bio_add_page(bio, bvec->bv_page, bvec->bv_len,
+				bvec->bv_offset)) {
+		bio_put(bio);
+		free_block_bdev(zram, entry);
+		return -EIO;
+	}
+
+	if (!parent) {
+		bio->bi_opf = REQ_OP_WRITE | REQ_SYNC;
+		bio->bi_end_io = zram_page_end_io;
+	} else {
+		bio->bi_opf = parent->bi_opf;
+		bio_chain(bio, parent);
+	}
+
+	submit_bio(bio);
+	*pentry = entry;
+
+	return 0;
+}
+
 #define HUGE_WRITEBACK 1
 #define IDLE_WRITEBACK 2
 
@@ -629,6 +676,10 @@ static ssize_t writeback_store(struct device *dev,
 	char mode_buf[8];
 	int mode = -1;
 	unsigned long blk_idx = 0;
+	/* pd1wb diagnostics */
+	unsigned int pd1wb_moved = 0, pd1wb_skip_bio = 0, pd1wb_skip_flag = 0;
+	unsigned int pd1wb_skip_mark = 0, pd1wb_skip_misc = 0;
+	int pd1wb_first_bio_err = 0;
 
 	sz = strscpy(mode_buf, buf, sizeof(mode_buf));
 	if (sz <= 0)
@@ -674,6 +725,7 @@ static ssize_t writeback_store(struct device *dev,
 		if (zram->wb_limit_enable && !zram->bd_wb_limit) {
 			spin_unlock(&zram->wb_limit_lock);
 			ret = -EIO;
+			pd1wb_skip_misc++;
 			break;
 		}
 		spin_unlock(&zram->wb_limit_lock);
@@ -682,25 +734,34 @@ static ssize_t writeback_store(struct device *dev,
 			blk_idx = alloc_block_bdev(zram);
 			if (!blk_idx) {
 				ret = -ENOSPC;
+				pd1wb_skip_misc++;
 				break;
 			}
 		}
 
 		zram_slot_lock(zram, index);
-		if (!zram_allocated(zram, index))
+		if (!zram_allocated(zram, index)) {
+			pd1wb_skip_misc++;
 			goto next;
+		}
 
 		if (zram_test_flag(zram, index, ZRAM_WB) ||
 				zram_test_flag(zram, index, ZRAM_SAME) ||
-				zram_test_flag(zram, index, ZRAM_UNDER_WB))
+				zram_test_flag(zram, index, ZRAM_UNDER_WB)) {
+			pd1wb_skip_misc++;
 			goto next;
+		}
 
 		if (mode == IDLE_WRITEBACK &&
-			  !zram_test_flag(zram, index, ZRAM_IDLE))
+			  !zram_test_flag(zram, index, ZRAM_IDLE)) {
+			pd1wb_skip_mark++;
 			goto next;
+		}
 		if (mode == HUGE_WRITEBACK &&
-			  !zram_test_flag(zram, index, ZRAM_HUGE))
+			  !zram_test_flag(zram, index, ZRAM_HUGE)) {
+			pd1wb_skip_mark++;
 			goto next;
+		}
 		/*
 		 * Clearing ZRAM_UNDER_WB is duty of caller.
 		 * IOW, zram_free_page never clear it.
@@ -714,6 +775,7 @@ static ssize_t writeback_store(struct device *dev,
 			zram_clear_flag(zram, index, ZRAM_UNDER_WB);
 			zram_clear_flag(zram, index, ZRAM_IDLE);
 			zram_slot_unlock(zram, index);
+			pd1wb_skip_misc++;
 			continue;
 		}
 
@@ -734,6 +796,9 @@ static ssize_t writeback_store(struct device *dev,
 			zram_clear_flag(zram, index, ZRAM_UNDER_WB);
 			zram_clear_flag(zram, index, ZRAM_IDLE);
 			zram_slot_unlock(zram, index);
+			pd1wb_skip_bio++;
+			if (!pd1wb_first_bio_err)
+				pd1wb_first_bio_err = ret;
 			continue;
 		}
 
@@ -752,6 +817,7 @@ static ssize_t writeback_store(struct device *dev,
 			  !zram_test_flag(zram, index, ZRAM_IDLE)) {
 			zram_clear_flag(zram, index, ZRAM_UNDER_WB);
 			zram_clear_flag(zram, index, ZRAM_IDLE);
+			pd1wb_skip_flag++;
 			goto next;
 		}
 
@@ -761,6 +827,7 @@ static ssize_t writeback_store(struct device *dev,
 		zram_set_element(zram, index, blk_idx);
 		blk_idx = 0;
 		atomic64_inc(&zram->stats.pages_stored);
+		pd1wb_moved++;
 		spin_lock(&zram->wb_limit_lock);
 		if (zram->wb_limit_enable && zram->bd_wb_limit > 0)
 			zram->bd_wb_limit -=  1UL << (PAGE_SHIFT - 12);
@@ -771,6 +838,9 @@ next:
 
 	if (blk_idx)
 		free_block_bdev(zram, blk_idx);
+	pr_info("pd1wb: moved=%u skip_bio=%u(first=%d) skip_flag=%u skip_mark=%u skip_misc=%u\n",
+		pd1wb_moved, pd1wb_skip_bio, pd1wb_first_bio_err,
+		pd1wb_skip_flag, pd1wb_skip_mark, pd1wb_skip_misc);
 	ret = len;
 	__free_page(page);
 release_init_lock:
@@ -1325,6 +1395,7 @@ static int __zram_bvec_write(struct zram *zram, struct bio_vec *bvec,
 	struct page *page = bvec->bv_page;
 	unsigned long element = 0;
 	enum zram_pageflags flags = 0;
+	bool allow_wb = true;
 
 	mem = kmap_atomic(page);
 	if (page_same_filled(mem, &element)) {
@@ -1349,8 +1420,22 @@ compress_again:
 		return ret;
 	}
 
-	if (comp_len >= huge_class_size)
+	if (unlikely(comp_len >= huge_class_size)) {
 		comp_len = PAGE_SIZE;
+		/* tb8788p1: incompressible pages go straight to the backing
+		 * device instead of wasting zsmalloc memory */
+		if (zram_wb_enabled(zram) && allow_wb) {
+			zcomp_stream_put(zram->comp);
+			ret = write_to_bdev(zram, bvec, index, bio, &element);
+			if (!ret) {
+				flags = ZRAM_WB;
+				ret = 1;
+				goto out;
+			}
+			allow_wb = false;
+			goto compress_again;
+		}
+	}
 	/*
 	 * handle allocation has 2 paths:
 	 * a) fast path is executed with preemption disabled (for
