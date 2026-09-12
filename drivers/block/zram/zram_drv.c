@@ -407,6 +407,10 @@ static void reset_bdev(struct zram *zram)
 	if (!zram->backing_dev)
 		return;
 
+	/* pd1wb: catch who tears down the backing device */
+	pr_info("pd1wb: reset_bdev called\n");
+	dump_stack();
+
 	bdev = zram->bdev;
 	if (zram->old_block_size)
 		set_blocksize(bdev, zram->old_block_size);
@@ -669,8 +673,7 @@ static ssize_t writeback_store(struct device *dev,
 	struct zram *zram = dev_to_zram(dev);
 	unsigned long nr_pages = zram->disksize >> PAGE_SHIFT;
 	unsigned long index;
-	struct bio bio;
-	struct bio_vec bio_vec;
+	struct bio *bio;
 	struct page *page;
 	ssize_t ret, sz;
 	char mode_buf[8];
@@ -779,18 +782,24 @@ static ssize_t writeback_store(struct device *dev,
 			continue;
 		}
 
-		bio_init(&bio, &bio_vec, 1);
-		bio_set_dev(&bio, zram->bdev);
-		bio.bi_iter.bi_sector = blk_idx * (PAGE_SIZE >> 9);
-		bio.bi_opf = REQ_OP_WRITE | REQ_SYNC;
+		bio = bio_alloc(GFP_KERNEL, 1);
+		if (!bio) {
+			ret = -ENOMEM;
+			pd1wb_skip_misc++;
+			break;
+		}
+		bio_set_dev(bio, zram->bdev);
+		bio->bi_iter.bi_sector = blk_idx * (PAGE_SIZE >> 9);
+		bio->bi_opf = REQ_OP_WRITE | REQ_SYNC;
 
-		bio_add_page(&bio, bvec.bv_page, bvec.bv_len,
+		bio_add_page(bio, bvec.bv_page, bvec.bv_len,
 				bvec.bv_offset);
 		/*
 		 * XXX: A single page IO would be inefficient for write
 		 * but it would be not bad as starter.
 		 */
-		ret = submit_bio_wait(&bio);
+		ret = submit_bio_wait(bio);
+		bio_put(bio);
 		if (ret) {
 			zram_slot_lock(zram, index);
 			zram_clear_flag(zram, index, ZRAM_UNDER_WB);
