@@ -78,6 +78,18 @@
 #define PT_REGS_IP(x) (__PT_REGS_CAST(x)->__PT_IP_REG)
 #define PT_REGS_ORIG_SYSCALL(x) (__PT_REGS_CAST(x)->__PT_ORIG_SYSCALL_REG)
 
+#if defined(__aarch64__) && LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0)
+/*
+ * Pre-4.17 arm64 has no syscall wrappers: a kprobe planted on
+ * sys_reboot sees the real syscall pt_regs directly. The v4.2.0
+ * definition unwraps the wrapper argument (regs[0]), which on 4.14 is
+ * the userspace magic value and dereferencing it as a pt_regs pointer
+ * faults (reboot_handler_pre+0x28, user addr 0x96000005 -> watchdog
+ * reset loop).
+ */
+#define PT_REAL_REGS(regs) (regs)
+#else
 #define PT_REAL_REGS(regs) ((struct pt_regs *)PT_REGS_PARM1(regs))
+#endif
 
 #endif
