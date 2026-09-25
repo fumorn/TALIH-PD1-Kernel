@@ -5,7 +5,6 @@
 #include <linux/kallsyms.h>
 #include <linux/mutex.h>
 #include <asm/cacheflush.h>
-#include <linux/sched/task_stack.h>
 #include "infra/symbol_resolver.h"
 #include "../patch_memory.h"
 #include "arch.h"
@@ -123,11 +122,7 @@ static int __init ksu_find_ni_syscall_slots(int *out_slots, int max_slots)
     if (!ksu_syscall_table || max_slots <= 0)
         return 0;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)
-    ni_syscall = (unsigned long)ksu_resolve_symbol_for_functable_hook("sys_ni_syscall");
-#else
     ni_syscall = (unsigned long)ksu_resolve_symbol_for_functable_hook("__arm64_sys_ni_syscall");
-#endif
 
     pr_info("sys_ni_syscall: 0x%lx\n", ni_syscall);
 
@@ -145,37 +140,6 @@ static int __init ksu_find_ni_syscall_slots(int *out_slots, int max_slots)
 }
 
 // Unified dispatcher: reads original NR from x8, dispatches to handler.
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)
-static long __nocfi ksu_syscall_dispatcher_414(void)
-{
-    struct pt_regs *regs = task_pt_regs(current);
-
-    if (unlikely(!regs))
-        return -ENOSYS;
-
-    if (regs->syscallno != ksu_dispatcher_nr)
-        return -ENOSYS;
-
-    int orig_nr = (int)PT_REGS_ORIG_SYSCALL(regs);
-
-    if (regs->syscallno == orig_nr)
-        return -ENOSYS;
-
-    regs->syscallno = orig_nr;
-    PT_REGS_ORIG_SYSCALL(regs) = orig_nr;
-
-    if (likely(orig_nr >= 0 && orig_nr < __NR_syscalls)) {
-        ksu_syscall_hook_fn fn = READ_ONCE(syscall_hooks[orig_nr]);
-        if (likely(fn))
-            return fn(orig_nr, regs);
-    }
-
-    return -ENOSYS;
-}
-#define ksu_dispatcher_fn ((syscall_fn_t)ksu_syscall_dispatcher_414)
-#else
-#define ksu_dispatcher_fn ksu_syscall_dispatcher
-#endif
 // Validates that syscallno matches our dispatcher slot (i.e. we redirected it),
 // otherwise it's a spurious call — return -ENOSYS.
 static long __nocfi ksu_syscall_dispatcher(const struct pt_regs *regs)
@@ -252,7 +216,7 @@ void __init ksu_syscall_hook_init(void)
     }
 
     ksu_dispatcher_nr = ni_slot;
-    ksu_syscall_table_hook(ksu_dispatcher_nr, ksu_dispatcher_fn, NULL);
+    ksu_syscall_table_hook(ksu_dispatcher_nr, (syscall_fn_t)ksu_syscall_dispatcher, NULL);
     pr_info("dispatcher installed at slot %d\n", ksu_dispatcher_nr);
 }
 

@@ -20,7 +20,6 @@
 #include "supercall/supercall.h"
 #include "hook/tp_marker.h"
 #include "feature/kernel_umount.h"
-#include "policy/app_profile.h"
 
 int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
 {
@@ -28,21 +27,6 @@ int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
 
     pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
-    /* 4.14 has no seccomp action-cache; disable seccomp entirely
-     * for allowed/managed processes (upstream 4.14 path) */
-    if (ksu_is_allow_uid_for_current(new_uid)) {
-        disable_seccomp();
-
-        if (unlikely(is_uid_manager(new_uid))) {
-            pr_info("install fd for manager: %d\n", new_uid);
-            ksu_install_fd();
-        }
-        ksu_set_task_tracepoint_flag(current);
-    } else {
-        ksu_clear_task_tracepoint_flag_if_needed(current);
-    }
-#else
     if (unlikely(is_uid_manager(new_uid))) {
         spin_lock_irq(&current->sighand->siglock);
         ksu_seccomp_allow_cache(current->seccomp.filter, __NR_reboot);
@@ -64,7 +48,6 @@ int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
     } else {
         ksu_clear_task_tracepoint_flag_if_needed(current);
     }
-#endif
 
     // Handle kernel umount
     ksu_handle_umount(old_uid, new_uid);

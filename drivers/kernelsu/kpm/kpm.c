@@ -18,7 +18,6 @@
 #include <linux/elf.h>
 #include <linux/kallsyms.h>
 #include <linux/version.h>
-#include "../kernel_compat.h"
 #include <linux/list.h>
 #include <linux/spinlock.h>
 #include <linux/rcupdate.h>
@@ -135,14 +134,14 @@ noinline int sukisu_handle_kpm(unsigned long control_code, unsigned long arg1,
             goto exit;
         }
 
-        if (!ksu_access_ok(arg1, 255)) {
+        if (!access_ok(arg1, 255)) {
             goto invalid_arg;
         }
 
         strncpy_from_user((char *)&kernel_load_path, (const char *)arg1, 255);
 
         if (arg2 != 0) {
-            if (!ksu_access_ok(arg2, 255)) {
+            if (!access_ok(arg2, 255)) {
                 goto invalid_arg;
             }
 
@@ -161,7 +160,7 @@ noinline int sukisu_handle_kpm(unsigned long control_code, unsigned long arg1,
             goto exit;
         }
 
-        if (!ksu_access_ok(arg1, sizeof(kernel_name_buffer))) {
+        if (!access_ok(arg1, sizeof(kernel_name_buffer))) {
             goto invalid_arg;
         }
 
@@ -181,7 +180,7 @@ noinline int sukisu_handle_kpm(unsigned long control_code, unsigned long arg1,
             goto exit;
         }
 
-        if (!ksu_access_ok(arg1, sizeof(kernel_name_buffer))) {
+        if (!access_ok(arg1, sizeof(kernel_name_buffer))) {
             goto invalid_arg;
         }
 
@@ -192,7 +191,7 @@ noinline int sukisu_handle_kpm(unsigned long control_code, unsigned long arg1,
         sukisu_kpm_info((const char *)&kernel_name_buffer, (char *)&buf,
                         sizeof(buf), &size);
 
-        if (!ksu_access_ok(arg2, size)) {
+        if (!access_ok(arg2, size)) {
             goto invalid_arg;
         }
 
@@ -207,7 +206,7 @@ noinline int sukisu_handle_kpm(unsigned long control_code, unsigned long arg1,
             goto exit;
         }
 
-        if (!ksu_access_ok(arg2, len)) {
+        if (!access_ok(arg2, len)) {
             goto invalid_arg;
         }
 
@@ -225,11 +224,11 @@ noinline int sukisu_handle_kpm(unsigned long control_code, unsigned long arg1,
         char kpm_name[KPM_NAME_LEN] = { 0 };
         char kpm_args[KPM_ARGS_LEN] = { 0 };
 
-        if (!ksu_access_ok(arg1, sizeof(kpm_name))) {
+        if (!access_ok(arg1, sizeof(kpm_name))) {
             goto invalid_arg;
         }
 
-        if (!ksu_access_ok(arg2, sizeof(kpm_args))) {
+        if (!access_ok(arg2, sizeof(kpm_args))) {
             goto invalid_arg;
         }
 
@@ -289,13 +288,13 @@ int do_kpm(void __user *arg)
         return -EFAULT;
     }
 
-    if (!ksu_access_ok(cmd.control_code, sizeof(int))) {
+    if (!access_ok(cmd.control_code, sizeof(int))) {
         pr_err("kpm: invalid control_code pointer %px\n",
                (void *)cmd.control_code);
         return -EFAULT;
     }
 
-    if (!ksu_access_ok(cmd.result_code, sizeof(int))) {
+    if (!access_ok(cmd.result_code, sizeof(int))) {
         pr_err("kpm: invalid result_code pointer %px\n",
                (void *)cmd.result_code);
         return -EFAULT;

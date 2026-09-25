@@ -91,17 +91,15 @@ static void ksu_install_fd_tw_func(struct callback_head *cb)
     kfree(tw);
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)
-/* 4.14: sys_reboot is invoked with direct arguments
- * (x0=magic1, x1=magic2, x2=cmd, x3=arg) */
 static int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs)
 {
-    int magic1 = (int)PT_REGS_PARM1(regs);
-    int magic2 = (int)PT_REGS_PARM2(regs);
+    struct pt_regs *real_regs = PT_REAL_REGS(regs);
+    int magic1 = (int)PT_REGS_PARM1(real_regs);
+    int magic2 = (int)PT_REGS_PARM2(real_regs);
 
     if (magic1 == KSU_INSTALL_MAGIC1 && magic2 == KSU_INSTALL_MAGIC2) {
         struct ksu_install_fd_tw *tw;
-        unsigned long arg4 = (unsigned long)PT_REGS_SYSCALL_PARM4(regs);
+        unsigned long arg4 = (unsigned long)PT_REGS_SYSCALL_PARM4(real_regs);
 
         tw = kzalloc(sizeof(*tw), GFP_ATOMIC);
         if (!tw)
@@ -129,33 +127,6 @@ static int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs)
 
     return 0;
 }
-#else
-static int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs)
-{
-    struct pt_regs *real_regs = PT_REAL_REGS(regs);
-    int magic1 = (int)PT_REGS_PARM1(real_regs);
-    int magic2 = (int)PT_REGS_PARM2(real_regs);
-
-    if (magic1 == KSU_INSTALL_MAGIC1 && magic2 == KSU_INSTALL_MAGIC2) {
-        struct ksu_install_fd_tw *tw;
-        unsigned long arg4 = (unsigned long)PT_REGS_SYSCALL_PARM4(real_regs);
-
-        tw = kzalloc(sizeof(*tw), GFP_ATOMIC);
-        if (!tw)
-            return 0;
-
-        tw->outp = (int __user *)arg4;
-        tw->cb.func = ksu_install_fd_tw_func;
-
-        if (task_work_add(current, &tw->cb, TWA_RESUME)) {
-            kfree(tw);
-            pr_warn("install fd add task_work failed\n");
-        }
-    }
-
-    return 0;
-}
-#endif
 
 static struct kprobe reboot_kp = {
     .symbol_name = REBOOT_SYMBOL,

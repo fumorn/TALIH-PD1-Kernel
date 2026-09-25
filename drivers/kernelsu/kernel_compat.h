@@ -24,9 +24,3 @@ static long ksu_copy_from_user_retry(void *to, const void __user *from,
 }
 
 #endif
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)
-#define ksu_access_ok(addr, size) access_ok(VERIFY_READ, (addr), (size))
-#else
-#define ksu_access_ok(addr, size) access_ok((addr), (size))
-#endif

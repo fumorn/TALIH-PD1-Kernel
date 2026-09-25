@@ -61,3 +61,6 @@ extern u32 ksu_file_sid;
 void __init ksu_selinux_init();
 
 #endif
+
+/* v4.2.0 renamed setup_ksu_cred_selinux -> setup_ksu_cred */
+void setup_ksu_cred(void);

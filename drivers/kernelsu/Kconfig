@@ -61,8 +61,6 @@ config KSU_X86_PATCH_SYSCALL_DISPATCHER
 	  Dynamically patch x64's hardened syscall dispatcher to support syscall hooks. This is a
 	  replacement for a kernel source code patch, and is useful for x86_64 LKM mode.
 
-endmenu
-
 config KSU_SUSFS
 	bool "SUSFS patches"
 	depends on KSU && THREAD_INFO_IN_TASK && 64BIT
@@ -187,3 +185,4 @@ config KSU_SUSFS_SUS_SDCARD_MONITOR
     help
         - Watches /data/media/0 with fsnotify; when the Android directory is
           created, refreshes sus_path rules so apps cannot see it.
+endmenu

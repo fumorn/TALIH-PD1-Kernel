@@ -20,9 +20,6 @@
 #include "feature/sulog.h"
 #include "supercall/supercall.h"
 #include "ksu.h"
-#ifdef CONFIG_KSU_SUSFS
-#include <linux/susfs.h>
-#endif
 #include "infra/file_wrapper.h"
 #include "selinux/selinux.h"
 #include "hook/syscall_hook.h"
@@ -151,17 +148,14 @@ int __init kernelsu_init(void)
     ksu_selinux_hide_init();
 
     ksu_supercalls_init();
-
-#ifdef CONFIG_KSU_SUSFS
-    susfs_init();
-#endif
+    ksu_app_profile_init();
 
     if (ksu_late_loaded) {
         pr_info("late load mode, skipping kprobe hooks\n");
 
         apply_kernelsu_rules();
         cache_sid();
-        setup_ksu_cred_selinux();
+        setup_ksu_cred();
 
         // Grant current process (ksud late-load) root
         // with KSU SELinux domain before enforcing SELinux, so it

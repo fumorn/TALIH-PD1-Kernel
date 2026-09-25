@@ -29,6 +29,7 @@
 #include "sulog/fd.h"
 #include "supercall/supercall.h"
 #include "feature/uts_spoof.h"
+#include "feature/cpu_spoof.h"
 
 #ifdef CONFIG_KPM
 #include "kpm/kpm.h"
@@ -715,6 +716,17 @@ static int do_set_spoof_version(void __user *arg)
                                  cmd.version[0] != '\0' ? cmd.version : NULL);
 }
 
+static int do_set_spoof_cpu(void __user *arg)
+{
+    struct ksu_set_spoof_cpu_cmd cmd;
+
+    if (copy_from_user(&cmd, arg, sizeof(cmd))) {
+        return -EFAULT;
+    }
+
+    return ksu_set_spoof_cpu(&cmd);
+}
+
 static int list_try_umount(void __user *arg)
 {
     struct ksu_list_try_umount_cmd cmd;
@@ -1012,6 +1024,12 @@ static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
         .handler = do_set_spoof_version,
         .perm_check = only_root
     },
+    {
+        .cmd = KSU_IOCTL_SET_SPOOF_CPU,
+        .name = "SET_SPOOF_CPU",
+        .handler = do_set_spoof_cpu,
+        .perm_check = only_root
+    },
     { 
         .cmd = KSU_IOCTL_GET_FULL_VERSION,
         .name = "GET_FULL_VERSION",
@@ -1099,7 +1117,6 @@ void ksu_supercall_cleanup_state(void)
     }
     up_write(&mount_list_lock);
 }
-
 #ifdef CONFIG_KSU_SUSFS
 int ksu_handle_susfs_cmd(unsigned int cmd, void __user **arg)
 {

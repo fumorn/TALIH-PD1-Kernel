@@ -220,3 +220,8 @@ void escape_to_root_for_init(void)
     setup_selinux(KERNEL_SU_CONTEXT, cred);
     commit_creds(cred);
 }
+
+/* 4.14 needs no 6.6-style seccomp backport detection */
+void __init ksu_app_profile_init(void)
+{
+}

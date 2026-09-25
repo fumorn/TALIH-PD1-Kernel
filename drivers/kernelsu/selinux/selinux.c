@@ -299,3 +299,9 @@ void escape_to_root_for_adb_root(void)
     }
     commit_creds(cred);
 }
+
+/* v4.2.0 renamed setup_ksu_cred_selinux -> setup_ksu_cred; alias it */
+void setup_ksu_cred(void)
+{
+    setup_ksu_cred_selinux();
+}

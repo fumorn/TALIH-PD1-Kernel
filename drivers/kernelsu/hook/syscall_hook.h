@@ -6,26 +6,11 @@
 #if defined(__x86_64__)
 typedef sys_call_ptr_t syscall_fn_t;
 #elif defined(__aarch64__)
+/* 4.14 has no syscall_fn_t in asm/syscall.h; upstream assumed >=5.x */
 typedef long (*syscall_fn_t)(const struct pt_regs *regs);
 #endif
 
 extern syscall_fn_t *ksu_syscall_table;
-
-#if defined(__aarch64__) && LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)
-typedef long (*ksu_tbl_fn_t)(unsigned long, unsigned long, unsigned long,
-                             unsigned long, unsigned long, unsigned long);
-static inline long ksu_syscall_table_call(int nr, const struct pt_regs *regs)
-{
-    return ((ksu_tbl_fn_t)READ_ONCE(ksu_syscall_table[nr]))(
-        regs->regs[0], regs->regs[1], regs->regs[2],
-        regs->regs[3], regs->regs[4], regs->regs[5]);
-}
-#else
-static inline long ksu_syscall_table_call(int nr, const struct pt_regs *regs)
-{
-    return ksu_syscall_table[nr](regs);
-}
-#endif
 
 // Dispatcher slot number in syscall table
 extern int ksu_dispatcher_nr;

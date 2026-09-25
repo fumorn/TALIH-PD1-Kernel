@@ -29,8 +29,8 @@
 #include "hook/syscall_hook.h"
 #include "hook/syscall_event_bridge.h"
 
-
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 5, 0)
+/* 4.14 lacks the nofault usercopy helpers; provide shims */
 static inline long ksu_strncpy_from_user_nofault(char *dst, const char __user *src, long count)
 {
     long n = 0;
@@ -211,7 +211,7 @@ void ksu_handle_execveat_ksud(const char *path, struct user_arg_ptr *argv)
             ksu_selinux_hide_handle_second_stage();
             apply_kernelsu_rules();
             cache_sid();
-            setup_ksu_cred_selinux();
+            setup_ksu_cred();
             init_second_stage_executed = true;
         }
     }
@@ -567,11 +567,9 @@ bool ksu_is_safe_mode()
     return false;
 }
 
-void ksu_execve_hook_ksud(const struct pt_regs *regs)
+static void ksu_execve_hook_ksud_common(const char __user *filename_user, const char __user *const __user *argv_user)
 {
-    const char __user **filename_user = (const char **)&PT_REGS_PARM1(regs);
-    const char __user *const __user *__argv = (const char __user *const __user *)PT_REGS_PARM2(regs);
-    struct user_arg_ptr argv = { .ptr.native = __argv };
+    struct user_arg_ptr argv = { .ptr.native = argv_user };
     char path[32];
     long ret;
     unsigned long addr;
@@ -580,7 +578,7 @@ void ksu_execve_hook_ksud(const struct pt_regs *regs)
     if (!filename_user)
         return;
 
-    addr = untagged_addr((unsigned long)*filename_user);
+    addr = untagged_addr((unsigned long)filename_user);
     fn = (const char __user *)addr;
 
     memset(path, 0, sizeof(path));
@@ -593,50 +591,29 @@ void ksu_execve_hook_ksud(const struct pt_regs *regs)
     ksu_handle_execveat_ksud(path, &argv);
 }
 
+void ksu_execve_hook_ksud(const struct pt_regs *regs)
+{
+    const char __user *filename_user = (const char __user *)PT_REGS_PARM1(regs);
+    const char __user *const __user *argv_user = (const char __user *const __user *)PT_REGS_PARM2(regs);
+
+    ksu_execve_hook_ksud_common(filename_user, argv_user);
+}
+
+void ksu_execveat_hook_ksud(const struct pt_regs *regs)
+{
+    const char __user *filename_user = (const char __user *)PT_REGS_PARM2(regs);
+    const char __user *const __user *argv_user = (const char __user *const __user *)PT_REGS_PARM3(regs);
+
+    ksu_execve_hook_ksud_common(filename_user, argv_user);
+}
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)
+/* 4.14 syscall table entries use the legacy 3-arg prototypes */
 static long (*orig_sys_read)(unsigned int fd, char __user *buf, size_t count);
 static long ksu_sys_read(unsigned int fd, char __user *buf, size_t count)
 {
     ksu_handle_sys_read(fd, &buf, &count);
     return orig_sys_read(fd, buf, count);
-}
-
-static long (*orig_sys_fstat)(unsigned int fd, struct stat __user *statbuf);
-static long ksu_sys_fstat(unsigned int fd, struct stat __user *statbuf)
-{
-    bool is_rc = false;
-    long ret;
-
-    struct file *file = fget(fd);
-    if (file) {
-        if (is_init_rc(file)) {
-            pr_info("stat init.rc");
-            is_rc = true;
-            load_module_rc_once();
-        }
-        fput(file);
-    }
-
-    ret = orig_sys_fstat(fd, statbuf);
-
-    if (is_rc) {
-        void __user *st_size_ptr = statbuf + offsetof(struct stat, st_size);
-        long size, new_size;
-        size_t extra = ksu_rc_len + module_rc_len;
-        if (!copy_from_user_nofault(&size, st_size_ptr, sizeof(long))) {
-            new_size = size + extra;
-            pr_info("adding rc len: %ld -> %ld (static=%zu module=%zu)", size, new_size, ksu_rc_len, module_rc_len);
-            if (!copy_to_user_nofault(st_size_ptr, &new_size, sizeof(long))) {
-                pr_info("added rc len");
-            } else {
-                pr_err("add rc len failed: statbuf 0x%lx", (unsigned long)st_size_ptr);
-            }
-        } else {
-            pr_err("read statbuf 0x%lx failed", (unsigned long)st_size_ptr);
-        }
-    }
-
-    return ret;
 }
 #else
 static long (*orig_sys_read)(const struct pt_regs *regs);
@@ -649,7 +626,45 @@ static long ksu_sys_read(const struct pt_regs *regs)
     ksu_handle_sys_read(fd, buf_ptr, count_ptr);
     return orig_sys_read(regs);
 }
+#endif
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)
+static long (*orig_sys_fstat)(unsigned int fd, struct stat __user *statbuf);
+static long ksu_sys_fstat(unsigned int fd, struct stat __user *statbuf)
+{
+    bool is_rc = false;
+    long ret;
+    struct file *file = fget(fd);
+
+    if (file) {
+        if (is_init_rc(file)) {
+            pr_info("stat init.rc");
+            is_rc = true;
+            load_module_rc_once();
+        }
+        fput(file);
+    }
+    ret = orig_sys_fstat(fd, statbuf);
+    if (is_rc) {
+        void __user *st_size_ptr = statbuf + offsetof(struct stat, st_size);
+        long size, new_size;
+        size_t extra = ksu_rc_len + module_rc_len;
+
+        if (!copy_from_user_nofault(&size, st_size_ptr, sizeof(long))) {
+            new_size = size + extra;
+            pr_info("adding rc len: %ld -> %ld (static=%zu module=%zu)",
+                    size, new_size, ksu_rc_len, module_rc_len);
+            if (!copy_to_user_nofault(st_size_ptr, &new_size, sizeof(long)))
+                pr_info("added rc len");
+            else
+                pr_err("add rc len failed: statbuf 0x%lx", (unsigned long)st_size_ptr);
+        } else {
+            pr_err("read statbuf 0x%lx failed", (unsigned long)st_size_ptr);
+        }
+    }
+    return ret;
+}
+#else
 static long (*orig_sys_fstat)(const struct pt_regs *regs);
 static long ksu_sys_fstat(const struct pt_regs *regs)
 {
