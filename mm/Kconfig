@@ -656,6 +656,17 @@ config MAX_STACK_SIZE_MB
 config ARCH_SUPPORTS_DEFERRED_STRUCT_PAGE_INIT
 	bool
 
+config SHUFFLE_PAGE_ALLOCATOR
+	bool "Page allocator randomization (lite)"
+	depends on MMU
+	default n
+	help
+	  Randomizes whether a freed page is inserted at the head or the
+	  tail of the buddy freelist, so an attacker cannot predict which
+	  page will be returned next. Lite backport of the 5.2 feature:
+	  only the free-path insertion point is randomized (no boot-time
+	  full shuffle, so zero boot-time cost).
+
 config DEFERRED_STRUCT_PAGE_INIT
 	bool "Defer initialisation of struct pages to kthreads"
 	default n

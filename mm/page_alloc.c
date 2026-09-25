@@ -25,6 +25,7 @@
 #include <linux/compiler.h>
 #include <linux/kernel.h>
 #include <linux/kasan.h>
+#include <linux/random.h>
 #include <linux/module.h>
 #include <linux/suspend.h>
 #include <linux/pagevec.h>
@@ -991,6 +992,15 @@ done_merging:
 		}
 	}
 
+#ifdef CONFIG_SHUFFLE_PAGE_ALLOCATOR
+	/* Lite backport of 5.2 page allocator shuffle: randomize the
+	 * insertion point so the next allocation is not predictable.
+	 * Boot-time full shuffle is skipped (zero boot cost). */
+	if (get_random_u32() & 1)
+		list_add_tail(&page->lru,
+			&zone->free_area[order].free_list[migratetype]);
+	else
+#endif
 	list_add(&page->lru, &zone->free_area[order].free_list[migratetype]);
 out:
 	zone->free_area[order].nr_free++;
