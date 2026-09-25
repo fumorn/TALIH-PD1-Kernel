@@ -206,7 +206,9 @@ bool ksu_has_syscall_hook(int nr)
 
 void __init ksu_syscall_hook_init(void)
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 17, 0)
     int ni_slot;
+#endif
 
     memset(syscall_hooks, 0, sizeof(syscall_hooks));
 
@@ -216,6 +218,17 @@ void __init ksu_syscall_hook_init(void)
     if (!ksu_syscall_table)
         return;
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0)
+    /* 4.14 has no syscall wrappers: syscall table entries use the
+     * scattered-argument prototype, but ksu_syscall_dispatcher takes
+     * a pt_regs pointer. Installing it into the table makes any
+     * redirected syscall dereference the first argument as a pt_regs
+     * pointer -> kernel panic loop. Verified: without the dispatcher
+     * all functionality (reboot supercall kprobe, execve escape,
+     * boot rc injection, allowlist, SUSFS) still works. Skip it. */
+    pr_info("4.14 scattered syscall table: skip dispatcher install\n");
+    return;
+#else
     // Find one ni_syscall slot for the dispatcher
     if (ksu_find_ni_syscall_slots(&ni_slot, 1) < 1) {
         pr_err("failed to find ni_syscall slot for dispatcher\n");
@@ -225,6 +238,7 @@ void __init ksu_syscall_hook_init(void)
     ksu_dispatcher_nr = ni_slot;
     ksu_syscall_table_hook(ksu_dispatcher_nr, (syscall_fn_t)ksu_syscall_dispatcher, NULL);
     pr_info("dispatcher installed at slot %d\n", ksu_dispatcher_nr);
+#endif
 }
 
 void __exit ksu_syscall_hook_exit(void)
