@@ -178,28 +178,23 @@ static long __nocfi ksu_syscall_dispatcher(const struct pt_regs *regs)
  * still in x0..x7 (scattered prototype, no syscall wrappers yet).
  * Installing the pt_regs-prototype dispatcher directly into the table
  * makes it dereference x0 (first user argument) as a pt_regs pointer
- * and panic in a boot loop. Install this thunk instead: it rebuilds a
- * minimal pt_regs from the argument registers (x8 still holds the
- * original syscall number because __sys_trace never rewrites it),
- * invokes the dispatcher and forwards its return value.
+ * and panic in a boot loop. Install this thunk instead.
+ *
+ * The original syscall number cannot be read from the x8 register here:
+ * by the time this thunk runs, x8 has been clobbered by
+ * syscall_trace_enter() (AAPCS64: x8 is caller-saved). Instead we copy
+ * the task's real pt_regs — the sys_enter handler already stashed the
+ * original nr into PT_REGS_ORIG_SYSCALL (regs[8]) and wrote
+ * ksu_dispatcher_nr into ->syscallno, which is exactly what the
+ * dispatcher expects.
  */
 static long __nocfi ksu_syscall_dispatcher_thunk(unsigned long x0, unsigned long x1,
                                                  unsigned long x2, unsigned long x3,
                                                  unsigned long x4, unsigned long x5)
 {
-    struct pt_regs regs = { };
-    unsigned long x8;
+    struct pt_regs regs = *task_pt_regs(current);
 
-    asm volatile("mov %0, x8" : "=r"(x8));
-
-    regs.regs[0] = x0;
-    regs.regs[1] = x1;
-    regs.regs[2] = x2;
-    regs.regs[3] = x3;
-    regs.regs[4] = x4;
-    regs.regs[5] = x5;
-    regs.regs[8] = x8; /* PT_REGS_ORIG_SYSCALL */
-    regs.syscallno = ksu_dispatcher_nr;
+    /* args in the copied regs are already correct (x0..x5 from user). */
 
     return ksu_syscall_dispatcher(&regs);
 }
