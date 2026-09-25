@@ -21,6 +21,31 @@ extern int ksu_dispatcher_nr;
 // Handler is responsible for calling ksu_syscall_table[orig_nr](regs) if needed.
 typedef long (*ksu_syscall_hook_fn)(int orig_nr, const struct pt_regs *regs);
 
+/*
+ * Invoking the original syscall from a hook.
+ * 4.17+ arm64 syscall wrappers take struct pt_regs*; pre-4.17 arm64
+ * entries are called by entry.S with blr and user args in x0..x7
+ * (scattered prototype). Calling a scattered prototype with a pt_regs
+ * pointer corrupts the arguments, so pre-4.17 we invoke with the
+ * scattered prototype taken from regs[0..5].
+ */
+#if defined(__aarch64__) && LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0)
+static inline long ksu_invoke_orig_syscall(int nr, const struct pt_regs *regs)
+{
+    long (*fn)(unsigned long, unsigned long, unsigned long,
+               unsigned long, unsigned long, unsigned long) =
+        (long (*)(unsigned long, unsigned long, unsigned long,
+                  unsigned long, unsigned long, unsigned long))ksu_syscall_table[nr];
+    return fn(regs->regs[0], regs->regs[1], regs->regs[2],
+              regs->regs[3], regs->regs[4], regs->regs[5]);
+}
+#else
+static inline long ksu_invoke_orig_syscall(int nr, const struct pt_regs *regs)
+{
+    return ksu_syscall_table[nr](regs);
+}
+#endif
+
 // --- Dispatcher-based hook API (register/unregister) ---
 // Register a handler into the dispatcher's routing table for syscall @nr.
 // When a marked process invokes syscall @nr, the sys_enter tracepoint redirects

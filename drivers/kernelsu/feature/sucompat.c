@@ -140,7 +140,7 @@ long ksu_handle_faccessat_sucompat(int orig_nr, struct pt_regs *regs)
             pr_info("faccessat su->ksud!\n");
             orig_filename = *filename_user;
             *filename_user = ksud_user_path();
-            ret = ksu_syscall_table[orig_nr](regs);
+            ret = ksu_invoke_orig_syscall(orig_nr, (const struct pt_regs *)regs);
             revert_creds(old_cred);
             *filename_user = orig_filename;
             return ret;
@@ -150,7 +150,7 @@ long ksu_handle_faccessat_sucompat(int orig_nr, struct pt_regs *regs)
     }
 
 do_orig_facessat:
-    return ksu_syscall_table[orig_nr](regs);
+    return ksu_invoke_orig_syscall(orig_nr, (const struct pt_regs *)regs);
 }
 
 long ksu_handle_stat_sucompat(int orig_nr, struct pt_regs *regs)
@@ -175,7 +175,7 @@ long ksu_handle_stat_sucompat(int orig_nr, struct pt_regs *regs)
             pr_info("newfstatat su->ksud!\n");
             orig_filename = *filename_user;
             *filename_user = ksud_user_path();
-            ret = ksu_syscall_table[orig_nr](regs);
+            ret = ksu_invoke_orig_syscall(orig_nr, (const struct pt_regs *)regs);
             revert_creds(old_cred);
             *filename_user = orig_filename;
             return ret;
@@ -185,7 +185,7 @@ long ksu_handle_stat_sucompat(int orig_nr, struct pt_regs *regs)
     }
 
 do_orig_stat:
-    return ksu_syscall_table[orig_nr](regs);
+    return ksu_invoke_orig_syscall(orig_nr, (const struct pt_regs *)regs);
 }
 
 static long ksu_handle_execve_sucompat_common(const char __user **filename_user,
@@ -263,7 +263,7 @@ static long ksu_handle_execve_sucompat_common(const char __user **filename_user,
     }
     ksu_sulog_emit_pending(pending_sucompat, ret, GFP_KERNEL);
 
-    ret = ksu_syscall_table[__NR_execveat](regs);
+    ret = ksu_invoke_orig_syscall(__NR_execveat, (const struct pt_regs *)regs);
     if (ret < 0) {
         ksu_close_fd(tmp_fd);
         regs->__PT_PARM1_REG = orig_regs[0];
@@ -275,7 +275,7 @@ static long ksu_handle_execve_sucompat_common(const char __user **filename_user,
     return ret;
 
 do_orig_execve:
-    return ksu_syscall_table[orig_nr](regs);
+    return ksu_invoke_orig_syscall(orig_nr, (const struct pt_regs *)regs);
 }
 
 long ksu_handle_execve_sucompat(const char __user **filename_user, int orig_nr, struct pt_regs *regs)

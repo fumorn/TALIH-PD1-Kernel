@@ -172,6 +172,39 @@ static long __nocfi ksu_syscall_dispatcher(const struct pt_regs *regs)
     return -ENOSYS;
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0)
+/*
+ * 4.14 calls sys_call_table entries via `blr x16` with the user args
+ * still in x0..x7 (scattered prototype, no syscall wrappers yet).
+ * Installing the pt_regs-prototype dispatcher directly into the table
+ * makes it dereference x0 (first user argument) as a pt_regs pointer
+ * and panic in a boot loop. Install this thunk instead: it rebuilds a
+ * minimal pt_regs from the argument registers (x8 still holds the
+ * original syscall number because __sys_trace never rewrites it),
+ * invokes the dispatcher and forwards its return value.
+ */
+static long __nocfi ksu_syscall_dispatcher_thunk(unsigned long x0, unsigned long x1,
+                                                 unsigned long x2, unsigned long x3,
+                                                 unsigned long x4, unsigned long x5)
+{
+    struct pt_regs regs = { };
+    unsigned long x8;
+
+    asm volatile("mov %0, x8" : "=r"(x8));
+
+    regs.regs[0] = x0;
+    regs.regs[1] = x1;
+    regs.regs[2] = x2;
+    regs.regs[3] = x3;
+    regs.regs[4] = x4;
+    regs.regs[5] = x5;
+    regs.regs[8] = x8; /* PT_REGS_ORIG_SYSCALL */
+    regs.syscallno = ksu_dispatcher_nr;
+
+    return ksu_syscall_dispatcher(&regs);
+}
+#endif
+
 // Register a handler into the dispatcher's routing table.
 // Does not modify the syscall table — the dispatcher slot is shared by all hooks.
 int ksu_register_syscall_hook(int nr, ksu_syscall_hook_fn fn)
@@ -206,9 +239,7 @@ bool ksu_has_syscall_hook(int nr)
 
 void __init ksu_syscall_hook_init(void)
 {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 17, 0)
     int ni_slot;
-#endif
 
     memset(syscall_hooks, 0, sizeof(syscall_hooks));
 
@@ -218,17 +249,6 @@ void __init ksu_syscall_hook_init(void)
     if (!ksu_syscall_table)
         return;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0)
-    /* 4.14 has no syscall wrappers: syscall table entries use the
-     * scattered-argument prototype, but ksu_syscall_dispatcher takes
-     * a pt_regs pointer. Installing it into the table makes any
-     * redirected syscall dereference the first argument as a pt_regs
-     * pointer -> kernel panic loop. Verified: without the dispatcher
-     * all functionality (reboot supercall kprobe, execve escape,
-     * boot rc injection, allowlist, SUSFS) still works. Skip it. */
-    pr_info("4.14 scattered syscall table: skip dispatcher install\n");
-    return;
-#else
     // Find one ni_syscall slot for the dispatcher
     if (ksu_find_ni_syscall_slots(&ni_slot, 1) < 1) {
         pr_err("failed to find ni_syscall slot for dispatcher\n");
@@ -236,9 +256,14 @@ void __init ksu_syscall_hook_init(void)
     }
 
     ksu_dispatcher_nr = ni_slot;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0)
+    /* 4.14 syscall entries are scattered-prototype; install the thunk
+     * that rebuilds pt_regs from x0..x7 and forwards to the dispatcher. */
+    ksu_syscall_table_hook(ksu_dispatcher_nr, (syscall_fn_t)ksu_syscall_dispatcher_thunk, NULL);
+#else
     ksu_syscall_table_hook(ksu_dispatcher_nr, (syscall_fn_t)ksu_syscall_dispatcher, NULL);
-    pr_info("dispatcher installed at slot %d\n", ksu_dispatcher_nr);
 #endif
+    pr_info("dispatcher installed at slot %d\n", ksu_dispatcher_nr);
 }
 
 void __exit ksu_syscall_hook_exit(void)
