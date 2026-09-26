@@ -684,6 +684,13 @@ static int selinux_hide_feature_set(u64 value)
 {
     bool enable = value != 0;
     int ret = 0;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0)
+    /* 4.14: selinux_hide stays disabled -- even with my_write_context
+     * using the live selinux_state the feature still caused a
+     * second-stage reboot. Not worth chasing further (rarely used). */
+    pr_info("selinux_hide: set to %d -> forced off on 4.14\n", enable);
+    return -EOPNOTSUPP;
+#endif
     pr_info("selinux_hide: set to %d\n", enable);
     mutex_lock(&selinux_hide_mutex);
     ksu_selinux_hide_enabled = enable;
