@@ -665,6 +665,13 @@ static int selinux_hide_feature_set(u64 value)
 {
     bool enable = value != 0;
     int ret = 0;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0)
+    /* BISECT: fake_state's shallow-copied policydb/sidtab crashes in
+     * hashtab_search on app setcon (ramoops: 'main' process, read fault
+     * at 0x369). Force-disable on 4.14 until the state copy is fixed. */
+    pr_info("selinux_hide: set to %d -> forced off on 4.14 (bisect)\n", enable);
+    return -EOPNOTSUPP;
+#endif
     pr_info("selinux_hide: set to %d\n", enable);
     mutex_lock(&selinux_hide_mutex);
     ksu_selinux_hide_enabled = enable;
