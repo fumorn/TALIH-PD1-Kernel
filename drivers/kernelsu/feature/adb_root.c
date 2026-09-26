@@ -70,7 +70,15 @@ static long setup_ld_preload(struct pt_regs *regs, unsigned long *envp_p)
     static const char kLdLibraryPath[] = "LD_LIBRARY_PATH=/data/adb/ksu/lib";
     static const size_t kReadEnvBatch = 16;
     static const size_t kPtrSize = sizeof(unsigned long);
+#if defined(__aarch64__) && LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0)
+    /* 4.14 direct table-patch mode: the hook builds a minimal pt_regs on
+     * the stack whose sp field is 0, so user_stack_pointer(regs) would
+     * point at address 0 and copy_to_user() would write into kernel
+     * space. Use the current task's real user stack pointer instead. */
+    unsigned long stackp = current_user_stack_pointer();
+#else
     unsigned long stackp = user_stack_pointer(regs);
+#endif
     unsigned long envp, ld_preload_p, ld_library_path_p;
     unsigned long *tmp_env_p = NULL, *tmp_env_p2 = NULL;
     size_t env_count = 0, total_size;
