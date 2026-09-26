@@ -182,7 +182,7 @@ int __init kernelsu_init(void)
         }
 
     } else {
-#ifndef CONFIG_KSU_HOOK_BISECT
+#if !defined(CONFIG_KSU_HOOK_BISECT) && !defined(CONFIG_KSU_HOOK_NO_MANAGER)
         ksu_syscall_hook_manager_init();
 #else
         pr_info("HOOK_BISECT: syscall hook manager skipped\n");

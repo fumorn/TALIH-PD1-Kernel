@@ -71,6 +71,16 @@ config KSU_HOOK_BISECT
 	  reboot kprobe (fd install) and ioctl stay, so the manager still
 	  detects the driver; su interception is disabled.
 
+config KSU_HOOK_NO_MANAGER
+	bool "BISECT: disable hook manager only (keep rc/read/fstat hooks)"
+	depends on KSU && !KSU_HOOK_BISECT
+	default n
+	help
+	  Keep the ksud boot rc injection (read/fstat table patches) but
+	  skip the dispatcher + sys_enter tracepoint + tp_marker machinery.
+	  ksud service starts at boot (post-fs-data, allowlist); execve
+	  escape and sucompat stay off.
+
 config KSU_SUSFS
 	bool "SUSFS patches"
 	depends on KSU && THREAD_INFO_IN_TASK && 64BIT
