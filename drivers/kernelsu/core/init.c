@@ -139,7 +139,9 @@ int __init kernelsu_init(void)
         ksu_spoof_version(spoof_release, spoof_version);
     }
 
+#ifndef CONFIG_KSU_HOOK_BISECT
     ksu_syscall_hook_init();
+#endif
 
     ksu_feature_init();
     ksu_sulog_init();
@@ -180,13 +182,21 @@ int __init kernelsu_init(void)
         }
 
     } else {
+#ifndef CONFIG_KSU_HOOK_BISECT
         ksu_syscall_hook_manager_init();
+#else
+        pr_info("HOOK_BISECT: syscall hook manager skipped\n");
+#endif
 
         ksu_allowlist_init();
 
         ksu_throne_tracker_init();
 
+#ifndef CONFIG_KSU_HOOK_BISECT
         ksu_ksud_init();
+#else
+        pr_info("HOOK_BISECT: ksud rc/read/fstat hooks skipped\n");
+#endif
 
         ksu_file_wrapper_init();
     }

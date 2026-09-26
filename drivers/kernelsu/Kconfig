@@ -61,6 +61,16 @@ config KSU_X86_PATCH_SYSCALL_DISPATCHER
 	  Dynamically patch x64's hardened syscall dispatcher to support syscall hooks. This is a
 	  replacement for a kernel source code patch, and is useful for x86_64 LKM mode.
 
+config KSU_HOOK_BISECT
+	bool "BISECT: disable syscall hook chain (dispatcher + rc/read/fstat)"
+	depends on KSU
+	default n
+	help
+	  Temporary bisect switch: skip dispatcher install, hook manager
+	  (sys_enter tracepoint) and the ksud rc/read/fstat table patches.
+	  reboot kprobe (fd install) and ioctl stay, so the manager still
+	  detects the driver; su interception is disabled.
+
 config KSU_SUSFS
 	bool "SUSFS patches"
 	depends on KSU && THREAD_INFO_IN_TASK && 64BIT
