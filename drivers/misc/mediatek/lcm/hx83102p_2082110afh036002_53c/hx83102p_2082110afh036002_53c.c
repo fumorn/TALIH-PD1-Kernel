@@ -646,7 +646,7 @@ static struct LCM_setting_table
 	{REGFLAG_DELAY, 120, {} },
 };
 
-static struct LCM_setting_table lcm_sleep_out_setting[] = {
+static struct LCM_setting_table __maybe_unused lcm_sleep_out_setting[] = {
 	{0x11, 1, {0x00} },
 	{REGFLAG_DELAY, 120, {} },
 	{0x29, 1, {0x00} },
@@ -869,35 +869,46 @@ static void lcm_resume(void)
 	pr_info("[Kernel/LCM] %s enter\n", __func__);
 	LCM_LOGI("[Kernel/LCM] %s enter\n", __func__);
 
-	/* tb8788p1: mirror the stock wake sequence exactly:
-	 * 1. it6112_power_ldo_on (recovered from its runtime code):
-	 *    avdd(1), 2ms, ext_pwr(1), 0.2ms, dvdd(1), 5ms, ts_rst(1), 5ms
-	 * 2. the stock lcm_init resume path: whole-chip reset pulse,
-	 *    150ms, then the it6112 MIPI re-init (replayed i2c sequence),
-	 *    100ms, backlight. */
-	lcm_set_gpio_output(LCM_GPIO_AVDD, GPIO_OUT_ONE);
+	/* tb8788p1: full cold-start at resume, mirroring the stock kernel
+	 * (whose lcm_resume simply calls lcm_init -> it6112_init).
+	 *
+	 * Reverse-engineered from the stock kernel binary:
+	 * - stock it6112_power_ldo_on order: dvdd -> ext_pwr -> avdd -> ts_rst
+	 *   (delay ratio ~10:1:25:25), and crucially the bridge rails are
+	 *   power-cycled, not just re-asserted -- the bridge keeps stale
+	 *   state otherwise and NACKs its init commands (observed: xfer 63
+	 *   ACK error -> panel dark even though the system runs fine).
+	 * - panel gets the FULL init table, not just sleep-out/display-on.
+	 */
+
+	/* 1. power-cycle all rails (clears bridge/panel residual state) */
+	lcm_set_gpio_output(LCM_GPIO_AVDD, GPIO_OUT_ZERO);
+	lcm_set_gpio_output(LCM_GPIO_EXT_PWR, GPIO_OUT_ZERO);
+	lcm_set_gpio_output(LCM_GPIO_DVDD, GPIO_OUT_ZERO);
+	MDELAY(20);
+
+	/* 2. rails back up in stock order: dvdd -> ext_pwr -> avdd -> ts_rst */
+	lcm_set_gpio_output(LCM_GPIO_DVDD, GPIO_OUT_ONE);
 	MDELAY(2);
 	lcm_set_gpio_output(LCM_GPIO_EXT_PWR, GPIO_OUT_ONE);
 	UDELAY(200);
-	lcm_set_gpio_output(LCM_GPIO_DVDD, GPIO_OUT_ONE);
+	lcm_set_gpio_output(LCM_GPIO_AVDD, GPIO_OUT_ONE);
 	MDELAY(5);
 	lcm_set_gpio_output(LCM_GPIO_TS_RST, GPIO_OUT_ONE);
 	MDELAY(5);
 
+	/* 3. whole-chip reset pulse */
 	lcm_set_gpio_output(LCM_GPIO_RST, GPIO_OUT_ZERO);
 	MDELAY(5);
 	lcm_set_gpio_output(LCM_GPIO_RST, GPIO_OUT_ONE);
 	MDELAY(150);
 
+	/* 4. bridge register rebuild (with per-xfer retry) */
 	lcm_it6112_replay();
 	MDELAY(100);
 
-	/* tb8788p1: after a long screen-off the it6112 bridge and the TDDI
-	 * lose their MIPI/display-on state; the whole-chip reset pulse above
-	 * returns the panel to sleep mode, so re-issue sleep-out + display-on
-	 * here or the panel stays dark (backlight only) on a long-idle wake. */
-	push_table(NULL, lcm_sleep_out_setting,
-		   ARRAY_SIZE(lcm_sleep_out_setting), 1);
+	/* 5. full panel init table (like stock lcm_init), not just sleep-out */
+	lcm_initial_registers();
 
 	lcm_set_gpio_output(LCM_GPIO_BL, GPIO_OUT_ONE);
 	pr_info("[Kernel/LCM] %s exit\n", __func__);
