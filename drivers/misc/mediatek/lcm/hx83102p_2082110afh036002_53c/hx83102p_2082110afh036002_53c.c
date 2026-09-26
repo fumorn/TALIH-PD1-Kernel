@@ -814,6 +814,8 @@ static void lcm_it6112_replay(void)
 	}
 
 	for (i = 0; i < IT6112_SEQ_N; i++) {
+		int attempt;
+
 		if (it6112_seq[i].rd) {
 			unsigned char cmd = it6112_seq[i].d[0];
 
@@ -825,7 +827,6 @@ static void lcm_it6112_replay(void)
 			msgs[1].flags = I2C_M_RD;
 			msgs[1].len = 1;
 			msgs[1].buf = &rd_data;
-			ret = i2c_transfer(adap, msgs, 2);
 		} else {
 			unsigned char wbuf[4];
 			int len = it6112_seq[i].len;
@@ -837,7 +838,20 @@ static void lcm_it6112_replay(void)
 			msgs[0].flags = 0;
 			msgs[0].len = len;
 			msgs[0].buf = wbuf;
-			ret = i2c_transfer(adap, msgs, 1);
+		}
+
+		/* tb8788p1: the bridge may still be coming out of reset when the
+		 * first i2c commands arrive (observed: single ACK error on one
+		 * transfer -> panel stays dark). Retry a failed transfer a few
+		 * times with a short delay instead of dropping the command. */
+		for (attempt = 0; attempt < 4; attempt++) {
+			if (it6112_seq[i].rd)
+				ret = i2c_transfer(adap, msgs, 2);
+			else
+				ret = i2c_transfer(adap, msgs, 1);
+			if (ret >= 0)
+				break;
+			UDELAY(1000);
 		}
 		if (ret < 0) {
 			if (err_cnt < 8)
