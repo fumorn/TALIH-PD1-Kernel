@@ -11,6 +11,8 @@
 #include "policy/app_profile.h"
 #include "policy/feature.h"
 #include "hook/syscall_event_bridge.h"
+#include "feature/sucompat.h"
+#include "hook/setuid_hook.h"
 #include "klog.h" // IWYU pragma: keep
 #include "manager/manager_observer.h"
 #include "manager/throne_tracker.h"
@@ -186,8 +188,15 @@ int __init kernelsu_init(void)
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0) && defined(__aarch64__)
         /* 4.14: the dispatcher/sys_enter/tp_marker machinery is replaced
          * by direct table patches (the v4.1.3-era approach that ran
-         * stably on this device). Never run the hook manager. */
+         * stably on this device). Never run the hook manager.
+         * The upstream registers the su_compat/kernel_umount feature
+         * handlers from inside the hook manager init, so with the
+         * manager disabled they were never registered and the manager
+         * reported "kernel does not support this feature". Register
+         * them explicitly here. */
         ksu_bridge_table_patch_init();
+        ksu_sucompat_init();
+        ksu_setuid_hook_init();
 #elif !defined(CONFIG_KSU_HOOK_BISECT) && !defined(CONFIG_KSU_HOOK_NO_MANAGER)
         ksu_syscall_hook_manager_init();
 #else

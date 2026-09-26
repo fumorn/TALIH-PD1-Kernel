@@ -844,7 +844,13 @@ static int do_get_full_version(void __user *arg)
 static int do_get_hook_type(void __user *arg)
 {
     struct ksu_hook_type_cmd cmd = { 0 };
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0) && defined(__aarch64__)
+    /* 4.14 uses direct syscall table patches (scattered-arg prototypes)
+     * instead of the dispatcher + sys_enter redirect machinery. */
+    const char *type = "Manual Syscall Hook";
+#else
     const char *type = "Tracepoint Syscall Redirect";
+#endif
 
     strscpy(cmd.hook_type, type, sizeof(cmd.hook_type));
 
