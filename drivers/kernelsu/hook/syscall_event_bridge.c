@@ -2,6 +2,8 @@
 #include "linux/cred.h"
 #include "linux/jump_label.h"
 #include "linux/printk.h"
+#include "linux/string.h"
+#include "linux/uidgid.h"
 #include "selinux/selinux.h"
 #include <asm/syscall.h>
 #include <linux/uaccess.h>
@@ -133,3 +135,88 @@ long __nocfi ksu_hook_setresuid(int orig_nr, const struct pt_regs *regs)
     ksu_handle_setresuid(old_uid, current_uid().val);
     return ret;
 }
+
+#if defined(__aarch64__) && LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0)
+/*
+ * 4.14 direct table-patch entry points (scattered-argument prototypes,
+ * matching entry.S's blr convention). The GKI-oriented dispatcher +
+ * sys_enter redirect + tp_marker machinery is not used on 4.14 -- these
+ * entry points are patched straight into sys_call_table and every
+ * process hits them; the hook logic itself decides what to do.
+ *
+ * A minimal pt_regs is built on the stack from the real arguments --
+ * this is safe here (unlike the dispatcher thunk) because the values
+ * come from the function arguments, not from clobbered registers.
+ */
+static inline void ksu_regs_from_args(struct pt_regs *regs, int nr,
+                                      unsigned long x0, unsigned long x1, unsigned long x2,
+                                      unsigned long x3, unsigned long x4, unsigned long x5)
+{
+    memset(regs, 0, sizeof(*regs));
+    regs->regs[0] = x0;
+    regs->regs[1] = x1;
+    regs->regs[2] = x2;
+    regs->regs[3] = x3;
+    regs->regs[4] = x4;
+    regs->regs[5] = x5;
+    regs->syscallno = nr;
+}
+
+long ksu_sys_execve_414(const char __user *filename,
+                        const char __user *const __user *argv,
+                        const char __user *const __user *envp)
+{
+    struct pt_regs regs;
+    ksu_regs_from_args(&regs, __NR_execve, (unsigned long)filename,
+                       (unsigned long)argv, (unsigned long)envp, 0, 0, 0);
+    return ksu_hook_execve_common(__NR_execve, &regs, false);
+}
+
+long ksu_sys_execveat_414(int fd, const char __user *filename,
+                          const char __user *const __user *argv,
+                          const char __user *const __user *envp, int flags)
+{
+    struct pt_regs regs;
+    ksu_regs_from_args(&regs, __NR_execveat, (unsigned long)fd,
+                       (unsigned long)filename, (unsigned long)argv,
+                       (unsigned long)envp, (unsigned long)flags, 0);
+    return ksu_hook_execve_common(__NR_execveat, &regs, true);
+}
+
+long ksu_sys_newfstatat_414(int dfd, const char __user *filename,
+                            struct stat __user *statbuf, int flag)
+{
+    struct pt_regs regs;
+    ksu_regs_from_args(&regs, __NR_newfstatat, (unsigned long)dfd,
+                       (unsigned long)filename, (unsigned long)statbuf,
+                       (unsigned long)flag, 0, 0);
+    return ksu_hook_newfstatat(__NR_newfstatat, &regs);
+}
+
+long ksu_sys_faccessat_414(int dfd, const char __user *filename, int mode)
+{
+    struct pt_regs regs;
+    ksu_regs_from_args(&regs, __NR_faccessat, (unsigned long)dfd,
+                       (unsigned long)filename, (unsigned long)mode, 0, 0, 0);
+    return ksu_hook_faccessat(__NR_faccessat, &regs);
+}
+
+long ksu_sys_setresuid_414(uid_t ruid, uid_t euid, uid_t suid)
+{
+    struct pt_regs regs;
+    ksu_regs_from_args(&regs, __NR_setresuid, (unsigned long)ruid,
+                       (unsigned long)euid, (unsigned long)suid, 0, 0, 0);
+    return ksu_hook_setresuid(__NR_setresuid, &regs);
+}
+
+/* Patch the five hooked syscalls directly into the table (4.14 mode). */
+void __init ksu_bridge_table_patch_init(void)
+{
+    ksu_syscall_table_hook(__NR_execve, (syscall_fn_t)ksu_sys_execve_414, NULL);
+    ksu_syscall_table_hook(__NR_execveat, (syscall_fn_t)ksu_sys_execveat_414, NULL);
+    ksu_syscall_table_hook(__NR_newfstatat, (syscall_fn_t)ksu_sys_newfstatat_414, NULL);
+    ksu_syscall_table_hook(__NR_faccessat, (syscall_fn_t)ksu_sys_faccessat_414, NULL);
+    ksu_syscall_table_hook(__NR_setresuid, (syscall_fn_t)ksu_sys_setresuid_414, NULL);
+    pr_info("bridge: 4.14 direct table patches installed (execve/execveat/newfstatat/faccessat/setresuid)\n");
+}
+#endif

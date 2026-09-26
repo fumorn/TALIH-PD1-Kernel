@@ -87,6 +87,23 @@ void ksu_syscall_table_hook(int nr, syscall_fn_t fn, syscall_fn_t *old)
     mutex_unlock(&hooked_entries_lock);
 }
 
+// Look up the saved original syscall_fn_t for a hooked entry (NULL if not hooked).
+syscall_fn_t ksu_syscall_table_get_orig(int nr)
+{
+    int i;
+    syscall_fn_t orig = NULL;
+
+    mutex_lock(&hooked_entries_lock);
+    for (i = 0; i < hooked_count; i++) {
+        if (hooked_entries[i].nr == nr) {
+            orig = hooked_entries[i].orig;
+            break;
+        }
+    }
+    mutex_unlock(&hooked_entries_lock);
+    return orig;
+}
+
 // Restore syscall_table[nr] to its original value and remove from tracking list.
 void ksu_syscall_table_unhook(int nr)
 {

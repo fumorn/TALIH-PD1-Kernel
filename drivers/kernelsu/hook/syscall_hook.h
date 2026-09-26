@@ -21,21 +21,26 @@ extern int ksu_dispatcher_nr;
 // Handler is responsible for calling ksu_syscall_table[orig_nr](regs) if needed.
 typedef long (*ksu_syscall_hook_fn)(int orig_nr, const struct pt_regs *regs);
 
+/* Saved-original lookup for direct table patches (avoid self-recursion). */
+syscall_fn_t ksu_syscall_table_get_orig(int nr);
+
 /*
  * Invoking the original syscall from a hook.
  * 4.17+ arm64 syscall wrappers take struct pt_regs*; pre-4.17 arm64
  * entries are called by entry.S with blr and user args in x0..x7
  * (scattered prototype). Calling a scattered prototype with a pt_regs
  * pointer corrupts the arguments, so pre-4.17 we invoke with the
- * scattered prototype taken from regs[0..5].
+ * scattered prototype taken from regs[0..5]. When the entry is hooked
+ * (direct table patch), call the saved original instead of the hook.
  */
 #if defined(__aarch64__) && LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0)
 static inline long ksu_invoke_orig_syscall(int nr, const struct pt_regs *regs)
 {
+    syscall_fn_t saved = ksu_syscall_table_get_orig(nr);
     long (*fn)(unsigned long, unsigned long, unsigned long,
                unsigned long, unsigned long, unsigned long) =
         (long (*)(unsigned long, unsigned long, unsigned long,
-                  unsigned long, unsigned long, unsigned long))ksu_syscall_table[nr];
+                  unsigned long, unsigned long, unsigned long))(saved ? saved : ksu_syscall_table[nr]);
     return fn(regs->regs[0], regs->regs[1], regs->regs[2],
               regs->regs[3], regs->regs[4], regs->regs[5]);
 }
