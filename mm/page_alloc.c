@@ -995,8 +995,12 @@ done_merging:
 #ifdef CONFIG_SHUFFLE_PAGE_ALLOCATOR
 	/* Lite backport of 5.2 page allocator shuffle: randomize the
 	 * insertion point so the next allocation is not predictable.
-	 * Boot-time full shuffle is skipped (zero boot cost). */
-	if (get_random_u32() & 1)
+	 * NOTE: get_random_u32() is NOT safe here (it touches percpu
+	 * batched entropy while we hold zone->lock; on 4.14 this path
+	 * corrupted tpidr_el1/current and crashed account_page_dirtied
+	 * in jbd2 -> watchdog reset). Use a cheap lock-safe mix of
+	 * jiffies and pfn instead. Boot-time full shuffle is skipped. */
+	if (((unsigned long)jiffies ^ pfn) & 1)
 		list_add_tail(&page->lru,
 			&zone->free_area[order].free_list[migratetype]);
 	else
