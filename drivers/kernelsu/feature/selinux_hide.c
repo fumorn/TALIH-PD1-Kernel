@@ -190,13 +190,32 @@ static ssize_t my_write_context(struct file *file, char *buf, size_t size)
     if (length)
         goto out;
 
-    length = ksu_security_context_to_sid(buf, size, &sid, GFP_KERNEL);
+    /* 4.14: backup_policydb/backup_sidtab are kfree()'d (and nulled) when
+     * the feature is enabled (their contents are moved into fake_state),
+     * so ksu_security_context_to_sid() through them dereferences NULL ->
+     * hashtab_search crash on app setcon. Use the live global
+     * selinux_state instead, and hide ksu domains by pretending they do
+     * not exist (same effect as converting against the pre-ksu backup
+     * policy upstream uses). */
+    if (strstr(buf, "u:r:" KERNEL_SU_DOMAIN ":")) {
+        length = -EINVAL;
+        goto out;
+    }
+
+    length = security_context_to_sid(&selinux_state, buf, size, &sid, GFP_KERNEL);
     if (length)
         goto out;
 
-    length = ksu_security_sid_to_context(sid, &canon, &len);
+    length = security_sid_to_context(&selinux_state, sid, &canon, &len);
     if (length)
         goto out;
+
+    /* Also mask the canonical form in case an aliased context resolves
+     * back to the ksu domain. */
+    if (canon && strstr(canon, "u:r:" KERNEL_SU_DOMAIN ":")) {
+        length = -EINVAL;
+        goto out;
+    }
 
     length = -ERANGE;
     if (len > SIMPLE_TRANSACTION_LIMIT) {
@@ -516,7 +535,7 @@ static int ksu_selinux_hide_enable()
     fake_state.initialized = true;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) || defined(KSU_COMPAT_HAS_SELINUX_POLICY_STRUCT)
     fake_state.policy = backup_sepolicy;
-#else
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 17, 0)
     fake_state.ss = kzalloc(sizeof(*fake_state.ss), GFP_KERNEL);
     if (!fake_state.ss) {
         pr_err("selinux_hide: failed alloc selinux_ss!\n");
@@ -640,7 +659,7 @@ static void ksu_selinux_hide_disable()
     pr_info("selinux_hide: exit selinux hide\n");
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0) && defined(KSU_COMPAT_USE_SELINUX_STATE) &&                          \
-    !defined(KSU_COMPAT_HAS_SELINUX_POLICY_STRUCT)
+    !defined(KSU_COMPAT_HAS_SELINUX_POLICY_STRUCT) && LINUX_VERSION_CODE >= KERNEL_VERSION(4, 17, 0)
     backup_policydb = kzalloc(sizeof(*backup_policydb), GFP_KERNEL);
     memcpy(backup_policydb, &fake_state.ss->policydb, sizeof(struct policydb));
 
@@ -665,13 +684,6 @@ static int selinux_hide_feature_set(u64 value)
 {
     bool enable = value != 0;
     int ret = 0;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0)
-    /* BISECT: fake_state's shallow-copied policydb/sidtab crashes in
-     * hashtab_search on app setcon (ramoops: 'main' process, read fault
-     * at 0x369). Force-disable on 4.14 until the state copy is fixed. */
-    pr_info("selinux_hide: set to %d -> forced off on 4.14 (bisect)\n", enable);
-    return -EOPNOTSUPP;
-#endif
     pr_info("selinux_hide: set to %d\n", enable);
     mutex_lock(&selinux_hide_mutex);
     ksu_selinux_hide_enabled = enable;
