@@ -322,8 +322,7 @@ struct LCM_setting_table {
 	unsigned char para_list[64];
 };
 
-/* tb8788p1: no suspend/resume tables — the stock keeps the panel running
- * across suspend and only drops the backlight; see lcm_suspend/lcm_resume. */
+/* Keep the rails on at suspend; resume rebuilds the bridge and panel state. */
 
 static void lcm_initial_registers(void)
 {
@@ -800,75 +799,77 @@ static void lcm_suspend(void)
  * it loses its MIPI lock across suspend and the stock re-inits it at
  * resume (it6112_init). This table was captured from the stock kernel's
  * i2c traffic during a wake (1365 transactions, see it6112_seq.h). */
-static void lcm_it6112_replay(void)
+static int lcm_it6112_replay(void)
 {
 	struct i2c_adapter *adap;
-	struct i2c_msg msgs[2];
-	unsigned char rd_data;
-	int i, ret, err_cnt = 0;
+	unsigned int i;
+	int ret = 0;
 
 	adap = i2c_get_adapter(3);
-	if (adap == NULL) {
-		LCM_LOGI("[Kernel/LCM] it6112: no i2c3 adapter\n");
-		return;
+	if (!adap) {
+		pr_err("[Kernel/LCM] it6112: no i2c3 adapter\n");
+		return -ENODEV;
 	}
 
-	for (i = 0; i < IT6112_SEQ_N; i++) {
-		int attempt;
+	for (i = 0; i < ARRAY_SIZE(it6112_seq); i++) {
+		unsigned char wbuf[4], rbuf[4];
+		struct i2c_msg msgs[2] = {
+			{ .addr = 0x56, .buf = wbuf },
+			{ .addr = 0x56, .flags = I2C_M_RD, .buf = rbuf },
+		};
+		int num = 1;
 
-		if (it6112_seq[i].rd) {
-			unsigned char cmd = it6112_seq[i].d[0];
-
-			msgs[0].addr = 0x56;
-			msgs[0].flags = 0;
-			msgs[0].len = 1;
-			msgs[0].buf = &cmd;
-			msgs[1].addr = 0x56;
-			msgs[1].flags = I2C_M_RD;
-			msgs[1].len = 1;
-			msgs[1].buf = &rd_data;
-		} else {
-			unsigned char wbuf[4];
-			int len = it6112_seq[i].len;
-			int j;
-
-			for (j = 0; j < len; j++)
-				wbuf[j] = it6112_seq[i].d[j];
-			msgs[0].addr = 0x56;
-			msgs[0].flags = 0;
-			msgs[0].len = len;
-			msgs[0].buf = wbuf;
+		if (it6112_seq[i].rd || !it6112_seq[i].len ||
+		    it6112_seq[i].len > sizeof(wbuf)) {
+			ret = -EINVAL;
+			goto invalid;
 		}
 
-		/* tb8788p1: the bridge may still be coming out of reset when the
-		 * first i2c commands arrive (observed: single ACK error on one
-		 * transfer -> panel stays dark). Retry a failed transfer a few
-		 * times with a short delay instead of dropping the command. */
-		for (attempt = 0; attempt < 4; attempt++) {
-			if (it6112_seq[i].rd)
-				ret = i2c_transfer(adap, msgs, 2);
-			else
-				ret = i2c_transfer(adap, msgs, 1);
+		msgs[0].len = it6112_seq[i].len;
+		memcpy(wbuf, it6112_seq[i].d, msgs[0].len);
+
+		/* A captured read contains returned data, not an address.
+		 * Pair it with the preceding register-select write and keep
+		 * both buffers alive until the transfer has completed.
+		 */
+		if (i + 1 < ARRAY_SIZE(it6112_seq) && it6112_seq[i + 1].rd) {
+			if (msgs[0].len != 1 || !it6112_seq[i + 1].len ||
+			    it6112_seq[i + 1].len > sizeof(rbuf)) {
+				ret = -EINVAL;
+				goto invalid;
+			}
+			msgs[1].len = it6112_seq[i + 1].len;
+			num = 2;
+		}
+
+		ret = i2c_transfer(adap, msgs, num);
+		if (ret != num) {
+			pr_err("[Kernel/LCM] it6112: record %u reg 0x%02x: transferred %d/%d messages\n",
+			       i, wbuf[0], ret, num);
 			if (ret >= 0)
-				break;
-			UDELAY(1000);
+				ret = -EIO;
+			/* FIFO writes may have partially succeeded. Restart the
+			 * whole cold-start instead of duplicating a FIFO byte.
+			 */
+			goto out;
 		}
-		if (ret < 0) {
-			if (err_cnt < 8)
-				pr_info("[Kernel/LCM] it6112: xfer %d failed %d\n",
-					i, ret);
-			err_cnt++;
-		}
+		if (num == 2)
+			i++;
 	}
-	pr_info("[Kernel/LCM] it6112: replay done (%d xfers, %d failed)\n",
-		IT6112_SEQ_N, err_cnt);
+	pr_info("[Kernel/LCM] it6112: replay done (%zu records)\n",
+		ARRAY_SIZE(it6112_seq));
+	ret = 0;
+	goto out;
+
+invalid:
+	pr_err("[Kernel/LCM] it6112: invalid record %u\n", i);
+out:
+	i2c_put_adapter(adap);
+	return ret;
 }
 
-static void lcm_resume(void)
+static void lcm_resume_power_cycle(void)
 {
-	pr_info("[Kernel/LCM] %s enter\n", __func__);
-	LCM_LOGI("[Kernel/LCM] %s enter\n", __func__);
-
 	/* tb8788p1: full cold-start at resume, mirroring the stock kernel
 	 * (whose lcm_resume simply calls lcm_init -> it6112_init).
 	 *
@@ -902,9 +903,28 @@ static void lcm_resume(void)
 	MDELAY(5);
 	lcm_set_gpio_output(LCM_GPIO_RST, GPIO_OUT_ONE);
 	MDELAY(150);
+}
 
-	/* 4. bridge register rebuild (with per-xfer retry) */
-	lcm_it6112_replay();
+static void lcm_resume(void)
+{
+	int attempt, ret;
+
+	pr_info("[Kernel/LCM] %s enter\n", __func__);
+	lcm_set_gpio_output(LCM_GPIO_BL, GPIO_OUT_ZERO);
+
+	for (attempt = 0; attempt < 3; attempt++) {
+		lcm_resume_power_cycle();
+		ret = lcm_it6112_replay();
+		if (!ret)
+			break;
+		pr_warn("[Kernel/LCM] it6112: cold-start attempt %d failed: %d\n",
+			attempt + 1, ret);
+	}
+	if (ret) {
+		pr_err("[Kernel/LCM] resume failed: bridge init incomplete, backlight kept off\n");
+		return;
+	}
+
 	MDELAY(100);
 
 	/* 5. full panel init table (like stock lcm_init), not just sleep-out */

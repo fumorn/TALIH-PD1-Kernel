@@ -468,6 +468,7 @@ static void _release_wrot_resource_nolock(enum CMDQ_EVENT_ENUM resourceEvent)
 	disp_path_handle phandle = primary_get_dpmgr_handle();
 	struct disp_ddp_path_config *pconfig = NULL;
 	unsigned int rdma0_shadow_mode = 0;
+	bool bypass_shadow;
 
 	DISPINFO("[LP]%s\n", __func__);
 
@@ -509,8 +510,9 @@ static void _release_wrot_resource_nolock(enum CMDQ_EVENT_ENUM resourceEvent)
 	/* 2.wait EOF */
 	_cmdq_insert_wait_frame_done_token_mira(qhandle);
 
-	if (disp_helper_get_option(DISP_OPT_SHADOW_REGISTER) &&
-	    disp_helper_get_option(DISP_OPT_SHADOW_MODE) != 2) {
+	bypass_shadow = disp_helper_get_option(DISP_OPT_SHADOW_REGISTER) &&
+		disp_helper_get_option(DISP_OPT_SHADOW_MODE) != 2;
+	if (bypass_shadow) {
 		/*
 		 * In CMD mode, after release WROT resource, primary display
 		 * maybe enter idle mode, so the RDMA0 register only be written
@@ -525,16 +527,10 @@ static void _release_wrot_resource_nolock(enum CMDQ_EVENT_ENUM resourceEvent)
 		rdma0_shadow_mode = DISP_REG_GET(DISP_REG_RDMA_SHADOW_UPDATE);
 		DISP_REG_SET(qhandle, DISP_REG_RDMA_SHADOW_UPDATE,
 			     (0x1 << 1) | (0x0 << 2));
-
-		/* 3.disable RDMA0 share SRAM */
-		DISP_REG_SET(qhandle, DISP_REG_RDMA_SRAM_SEL, 0);
-
-		/* RDMA0 recover shadow mode */
-		DISP_REG_SET(qhandle, DISP_REG_RDMA_SHADOW_UPDATE,
-			     rdma0_shadow_mode);
 	}
-	/* 4.release share SRAM resourceEvent */
-	cmdqRecReleaseResource(qhandle, resourceEvent);
+
+	/* Stop using WROT SRAM even when shadow/golden settings are disabled. */
+	DISP_REG_SET(qhandle, DISP_REG_RDMA_SRAM_SEL, 0);
 
 	/* set RDMA golden setting parameters */
 	set_share_sram(0);
@@ -544,6 +540,15 @@ static void _release_wrot_resource_nolock(enum CMDQ_EVENT_ENUM resourceEvent)
 	if (disp_helper_get_option(DISP_OPT_DYNAMIC_RDMA_GOLDEN_SETTING))
 		dpmgr_path_ioctl(phandle, qhandle, DDP_RDMA_GOLDEN_SETTING,
 				 pconfig);
+
+	if (bypass_shadow)
+		DISP_REG_SET(qhandle, DISP_REG_RDMA_SHADOW_UPDATE,
+			     rdma0_shadow_mode);
+
+	/* The event lets MDP start writing this SRAM immediately. Queue it
+	 * only after RDMA has switched SRAM and reduced its FIFO size.
+	 */
+	cmdqRecReleaseResource(qhandle, resourceEvent);
 
 	cmdqRecFlushAsync(qhandle);
 	cmdqRecDestroy(qhandle);

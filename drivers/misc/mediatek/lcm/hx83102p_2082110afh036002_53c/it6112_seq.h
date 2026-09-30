@@ -1,4 +1,8 @@
-/* captured from the stock kernel's wake (it6112_init on i2c3@0x56) */
+/* Captured from the stock kernel's wake (it6112_init on i2c3@0x56).
+ * rd=1 entries contain observed read DATA, paired with the preceding
+ * one-byte register-select write. They are not register addresses and
+ * their values must not be written back or used as fixed status checks.
+ */
 static const struct { u8 rd; u8 len; u8 d[4]; } it6112_seq[] = {
 	{0,1,{0x44,0x00,0x00,0x00}},
 	{1,1,{0x82,0x00,0x00,0x00}},
@@ -1366,4 +1370,3 @@ static const struct { u8 rd; u8 len; u8 d[4]; } it6112_seq[] = {
 	{1,1,{0x01,0x00,0x00,0x00}},
 	{0,2,{0x06,0x00,0x00,0x00}},
 };
-#define IT6112_SEQ_N 1365
