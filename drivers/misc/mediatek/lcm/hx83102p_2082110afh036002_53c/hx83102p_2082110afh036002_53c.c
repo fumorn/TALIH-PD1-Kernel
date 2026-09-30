@@ -799,6 +799,47 @@ static void lcm_suspend(void)
  * it loses its MIPI lock across suspend and the stock re-inits it at
  * resume (it6112_init). This table was captured from the stock kernel's
  * i2c traffic during a wake (1365 transactions, see it6112_seq.h). */
+static int lcm_it6112_transfer(struct i2c_adapter *adap,
+			      struct i2c_msg *msgs, int num, bool retry_safe)
+{
+	int attempt, ret;
+
+	for (attempt = 0; attempt < 4; attempt++) {
+		ret = i2c_transfer(adap, msgs, num);
+		if (ret == num)
+			return 0;
+		if (!retry_safe || attempt == 3)
+			break;
+		MDELAY(2);
+	}
+	return ret < 0 ? ret : -EIO;
+}
+
+static int lcm_it6112_check_reset(struct i2c_adapter *adap)
+{
+	/* ID bytes checked by the stock it6112_init(), not captured read data. */
+	static const unsigned char id[] = { 0x54, 0x49, 0x12, 0x61 };
+	unsigned char reg, value;
+	struct i2c_msg msgs[2] = {
+		{ .addr = 0x56, .len = 1, .buf = &reg },
+		{ .addr = 0x56, .flags = I2C_M_RD, .len = 1, .buf = &value },
+	};
+	int ret;
+
+	for (reg = 0; reg < ARRAY_SIZE(id); reg++) {
+		ret = lcm_it6112_transfer(adap, msgs, 2, true);
+		if (ret)
+			return ret;
+		if (value != id[reg])
+			return -ENODEV;
+	}
+	reg = 0x05;
+	ret = lcm_it6112_transfer(adap, msgs, 2, true);
+	if (ret)
+		return ret;
+	return (value & 0x01) ? -EBUSY : 0;
+}
+
 static int lcm_it6112_replay(void)
 {
 	struct i2c_adapter *adap;
@@ -818,6 +859,7 @@ static int lcm_it6112_replay(void)
 			{ .addr = 0x56, .flags = I2C_M_RD, .buf = rbuf },
 		};
 		int num = 1;
+		bool soft_reset, retry_safe;
 
 		if (it6112_seq[i].rd || !it6112_seq[i].len ||
 		    it6112_seq[i].len > sizeof(wbuf)) {
@@ -842,17 +884,41 @@ static int lcm_it6112_replay(void)
 			num = 2;
 		}
 
-		ret = i2c_transfer(adap, msgs, num);
-		if (ret != num) {
-			pr_err("[Kernel/LCM] it6112: record %u reg 0x%02x: transferred %d/%d messages\n",
-			       i, wbuf[0], ret, num);
-			if (ret >= 0)
-				ret = -EIO;
+		soft_reset = num == 1 && msgs[0].len == 2 &&
+			wbuf[0] == 0x05 && wbuf[1] == 0x01;
+		/* Re-select the address on read retries. Do not duplicate FIFO
+		 * bytes (0x73), launch commands (0x75), or the soft-reset pulse.
+		 */
+		retry_safe = num == 2 ||
+			(!soft_reset && wbuf[0] != 0x73 && wbuf[0] != 0x75);
+		ret = lcm_it6112_transfer(adap, msgs, num, retry_safe);
+		if (soft_reset) {
+			/* Reset can drop its own ACK. Wait, then verify the live
+			 * chip identity and cleared reset bit before accepting it.
+			 */
+			MDELAY(5);
+			if (ret == -EREMOTEIO || ret == -ENXIO) {
+				int check = lcm_it6112_check_reset(adap);
+
+				if (!check) {
+					pr_warn("[Kernel/LCM] it6112: reset NACK at record %u, live ID/reset verified\n",
+						i);
+					ret = 0;
+				}
+			}
+		}
+		if (ret) {
+			pr_err("[Kernel/LCM] it6112: record %u reg 0x%02x failed: %d\n",
+			       i, wbuf[0], ret);
 			/* FIFO writes may have partially succeeded. Restart the
 			 * whole cold-start instead of duplicating a FIFO byte.
 			 */
 			goto out;
 		}
+		/* The byte-only capture omitted the power/reset settling waits. */
+		if (num == 1 && msgs[0].len == 2 && !soft_reset &&
+		    (wbuf[0] == 0x05 || wbuf[0] == 0x06))
+			MDELAY(2);
 		if (num == 2)
 			i++;
 	}
