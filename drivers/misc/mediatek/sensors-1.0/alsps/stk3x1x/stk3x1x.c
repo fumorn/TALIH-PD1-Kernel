@@ -1205,7 +1205,9 @@ static int stk3x1x_enable_ps(struct i2c_client *client,
 		obj->first_boot = false;
 
 	if (enable) {
-		stk3x1x_enable_ps_set_thd(obj);
+		err = stk3x1x_enable_ps_set_thd(obj);
+		if (err)
+			return err;
 
 		if (obj->hw->polling_mode_ps == 1)
 			__pm_stay_awake(&mps_lock);
@@ -1603,6 +1605,15 @@ static void stk3x1x_eint_work(struct work_struct *work)
 			goto err_i2c_rw;
 		}
 
+		/* Reading/clearing PSINT alone leaves Android's last value stale. */
+		if ((atomic_read(&obj->state_val) & STK_STATE_EN_PS_MASK) &&
+		    !atomic_read(&obj->ps_suspend)) {
+			int nf = !!(flag_reg & STK_FLG_NF_MASK);
+
+			if (nf != obj->ps_distance_last)
+				stk_ps_report(obj, nf);
+		}
+
 #ifdef STK_PS_DEBUG
 		APS_DBG("%s: ps interrupt, show all reg\n", __func__);
 		show_allreg(); /*for debug*/
@@ -1633,7 +1644,7 @@ err_i2c_rw:
 #if defined(CONFIG_OF)
 static irqreturn_t stk3x1x_eint_handler(int irq, void *desc)
 {
-	pr_info("%s\n", __func__);
+	APS_DBG("%s\n", __func__);
 	disable_irq_nosync(stk3x1x_obj->irq);
 	stk3x1x_eint_func();
 	return IRQ_HANDLED;
@@ -2992,6 +3003,7 @@ static int stk3x1x_suspend(struct device *dev)
 {
 	struct stk3x1x_priv *obj = dev_get_drvdata(dev);
 	int err = 0;
+	int state;
 
 	APS_FUN();
 
@@ -3000,27 +3012,50 @@ static int stk3x1x_suspend(struct device *dev)
 		return -EINVAL;
 	}
 
+	/* Save the actual HAL-controlled state, not the legacy ioctl mask. */
+	state = atomic_read(&obj->state_val);
+	obj->re_enable_als = !!(state & STK_STATE_EN_ALS_MASK);
+	obj->re_enable_ps = !!(state & STK_STATE_EN_PS_MASK);
+
 	atomic_set(&obj->als_suspend, 1);
 	err = stk3x1x_enable_als(obj->client, 0);
 	if (err) {
 		APS_ERR("disable als fail: %d\n", err);
-		return err;
+		goto restore_als;
+	}
+
+	/* Interrupt-mode proximity is a wake-up sensor; keep it measuring. */
+	if (obj->re_enable_ps && !obj->hw->polling_mode_ps) {
+		err = enable_irq_wake(obj->irq);
+		if (err) {
+			APS_ERR("enable irq wake fail: %d\n", err);
+			goto restore_als;
+		}
+		return 0;
 	}
 
 	atomic_set(&obj->ps_suspend, 1);
 	err = stk3x1x_enable_ps(obj->client, 0, 1);
 	if (err) {
 		APS_ERR("disable ps fail: %d\n", err);
-		return err;
+		atomic_set(&obj->ps_suspend, 0);
+		goto restore_als;
 	}
 
 	return 0;
+
+restore_als:
+	atomic_set(&obj->als_suspend, 0);
+	if (obj->re_enable_als)
+		stk3x1x_enable_als(obj->client, 1);
+	return err;
 }
 
 static int stk3x1x_resume(struct device *dev)
 {
 	struct stk3x1x_priv *obj = dev_get_drvdata(dev);
 	int err = 0;
+	int ret;
 
 	APS_FUN();
 
@@ -3029,28 +3064,36 @@ static int stk3x1x_resume(struct device *dev)
 		return -EINVAL;
 	}
 
-	err = stk3x1x_init_client(obj->client);
-	if (err) {
-		APS_ERR("initialize client fail!!\n");
-		return err;
-	}
-
-	err = stk3x1x_enable_als(obj->client, 1);
-	if (err) {
-		APS_ERR("enable als fail: %d\n", err);
-		return err;
-	}
-
+	/* Clear these before enable_ps() takes and reports its first sample. */
 	atomic_set(&obj->als_suspend, 0);
-	err = stk3x1x_enable_ps(obj->client, 1, 1);
-	if (err) {
-		APS_ERR("enable ps fail: %d\n", err);
-		return err;
-	}
-
 	atomic_set(&obj->ps_suspend, 0);
 
-	return 0;
+	if (obj->re_enable_ps && !obj->hw->polling_mode_ps) {
+		err = disable_irq_wake(obj->irq);
+		if (err)
+			APS_ERR("disable irq wake fail: %d\n", err);
+	}
+
+	/* Power is retained: a reset would discard thresholds and wake events. */
+	if (obj->re_enable_als) {
+		ret = stk3x1x_enable_als(obj->client, 1);
+		if (ret) {
+			APS_ERR("enable als fail: %d\n", ret);
+			if (!err)
+				err = ret;
+		}
+	}
+
+	if (obj->re_enable_ps && obj->hw->polling_mode_ps) {
+		ret = stk3x1x_enable_ps(obj->client, 1, 1);
+		if (ret) {
+			APS_ERR("enable ps fail: %d\n", ret);
+			if (!err)
+				err = ret;
+		}
+	}
+
+	return err;
 }
 #endif
 /*----------------------------------------------------------------------------*/
